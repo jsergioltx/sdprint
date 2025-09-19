@@ -311,91 +311,101 @@
     }, 600);
   })();
 
-    // ====== AUTO-CHECK DE OPÇÕES (finalizar e prontuário) ======
+     // ====== AUTO-CHECK DE OPÇÕES (finalizar e prontuário) ======
   (function autoCheckOptions() {
     const isProntuario = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/(primaria|.+)?/i.test(location.pathname);
     const isFinalizar  = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/finalizar$/i.test(location.pathname);
     if (!isProntuario && !isFinalizar) return;
 
-    // normaliza texto p/ busca robusta (sem acento/caixa)
+    // normaliza texto p/ busca robusta
     const norm = s => (s || '')
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/\s+/g,' ').trim().toLowerCase();
 
-    // marca checkbox ou switch cujo label contenha o padrão
-    function setCheckByLabel(regex, checked = true) {
+    function fireAll(el){
+      el.dispatchEvent(new Event('input',  { bubbles:true }));
+      el.dispatchEvent(new Event('change', { bubbles:true }));
+    }
+
+    // marca por label, suportando checkbox e radio
+    function setChoiceByLabel(regex, wantChecked = true) {
       const allLabels = Array.from(document.querySelectorAll('label, [role="label"]'));
-      let done = false;
+      let set = false;
 
       for (const lb of allLabels) {
         const t = norm(lb.textContent);
         if (!regex.test(t)) continue;
 
-        // tenta achar input associado (for/id)
+        // acha input associado
         let inp = null;
         const forId = lb.getAttribute('for');
         if (forId) inp = document.getElementById(forId);
-
-        // fallback: input dentro do label
         if (!inp) inp = lb.querySelector('input[type="checkbox"], input[type="radio"]');
-
-        // fallback 2: procurar próximo input por proximidade
         if (!inp) {
-          const near = lb.closest('div,li,tr,section') || lb.parentElement;
+          const near = lb.closest('div,li,tr,section,fieldset') || lb.parentElement;
           inp = near && near.querySelector('input[type="checkbox"], input[type="radio"]');
         }
+        if (!inp) continue;
 
-        if (inp) {
-          if (inp.checked !== checked) {
-            inp.checked = checked;
-            // dispara eventos p/ frameworks captarem
-            inp.dispatchEvent(new Event('input',  { bubbles: true }));
-            inp.dispatchEvent(new Event('change', { bubbles: true }));
-            // alguns front-ends dependem do click
-            inp.click();
+        if (inp.type === 'checkbox') {
+          if (inp.checked !== wantChecked) {
+            inp.checked = wantChecked;
+            fireAll(inp);
+            // alguns front-ends precisam do click
+            lb.click?.();
           }
-          done = true;
+          set = true;
+        } else if (inp.type === 'radio') {
+          // desmarca os outros do mesmo grupo
+          if (!inp.checked) {
+            const group = inp.name ? document.querySelectorAll(`input[type="radio"][name="${CSS.escape(inp.name)}"]`) : [];
+            group.forEach(r => { if (r !== inp && r.checked) { r.checked = false; fireAll(r); } });
+            inp.checked = true;
+            fireAll(inp);
+            lb.click?.(); // garante handlers de UI
+          } else {
+            // já estava marcado
+          }
+          set = true;
         }
       }
-      return done;
+      return set;
     }
 
-    // observa mudanças no DOM para páginas dinâmicas
+    // observa mudanças dinâmicas
     const watcher = new MutationObserver(() => tick());
-    let armed = false, tries = 0;
+    let tries = 0;
 
     function tick() {
-      // padrões flexíveis para os rótulos
-      const rxRetorno = /retorno.*(cuidado.*continuado|continuado|programad)/i; // cobre: “Retorno para cuidado continuado / programado”
-      const rxLiberar = /liberar.*cida?dao/i; // cobre “Liberar o cidadão”
+      // padrões de texto
+      const rxRetorno = /retorno.*(cuidado.*continuado|continuado|programad)/i;   // checkbox
+      const rxLiberar = /liberar.*cida?dao/i;                                     // radio
 
-      const ok1 = setCheckByLabel(rxRetorno, true);
-      const ok2 = setCheckByLabel(rxLiberar, true);
+      const ok1 = setChoiceByLabel(rxRetorno, true);
+      const ok2 = setChoiceByLabel(rxLiberar, true);
 
       if (ok1 && ok2) {
-        console.log('[AutoCheck] Opções marcadas:', { retornoContinuadoProgramado: ok1, liberarCidadao: ok2 });
+        console.log('[AutoCheck] Marcado: retorno continuado/programado + liberar cidadão');
         watcher.disconnect();
-      } else {
-        // tenta por alguns ciclos até 5s
-        if (++tries > 50) watcher.disconnect();
+      } else if (++tries > 60) { // ~6s
+        watcher.disconnect();
+        console.warn('[AutoCheck] Nem todos os campos foram encontrados/marcados.', { ok1, ok2 });
       }
     }
 
     function arm() {
-      if (armed) return;
-      armed = true;
       tick();
-      watcher.observe(document.body, { childList: true, subtree: true });
-      // safety: desarma em 6s
-      setTimeout(() => watcher.disconnect(), 6000);
+      watcher.observe(document.body, { childList:true, subtree:true });
+      setTimeout(() => watcher.disconnect(), 7000); // safety
     }
 
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => setTimeout(arm, 200));
+      document.addEventListener('DOMContentLoaded', () => setTimeout(arm, 250));
     } else {
-      setTimeout(arm, 200);
+      setTimeout(arm, 250);
     }
   })();
+
 
 
 })();
