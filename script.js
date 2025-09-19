@@ -271,162 +271,144 @@
   document.body.appendChild(toggle);
   document.body.appendChild(menu);
 
-   // ===== AUTO CID Z00.0 (MUI Autocomplete) =====
+  // ===== helpers de espera =====
+  function waitFor(selector, { root = document, timeout = 10000, visibility = false } = {}) {
+    return new Promise((resolve, reject) => {
+      const t0 = performance.now();
+      const test = () => {
+        const el = root.querySelector(selector);
+        if (el && (!visibility || (el.offsetParent !== null))) return resolve(el);
+        if (performance.now() - t0 > timeout) return reject(new Error(`waitFor timeout: ${selector}`));
+        raf = requestAnimationFrame(test);
+      };
+      let raf = requestAnimationFrame(test);
+    });
+  }
+  function setNativeValue(el, val) {
+    const { set } = Object.getOwnPropertyDescriptor(el.__proto__, 'value') ||
+                    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') || {};
+    set && set.call(el, val);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // ===== AUTO CID Z00.0 =====
   (function autoCIDZ00() {
-    // só na aba principal do prontuário
-    if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i.test(location.pathname)) return;
+    const path = location.pathname;
 
-    // util p/ React/MUI: seta value de forma "nativa" e dispara input
-    function setNativeValue(el, val) {
-      const { set } = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') || {};
-      set && set.call(el, val);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-
-    // procura o input dentro do mesmo .form-group da label "CID10-01"
-    function findCid01Input() {
-      const labels = Array.from(document.querySelectorAll('.form-group.row > label.col-form-label'));
-      const lb = labels.find(l => /cid10-01/i.test(l.textContent || ''));
-      if (!lb) return null;
-      const group = lb.closest('.form-group.row');
-      if (!group) return null;
-      return group.querySelector('input[role="combobox"].form-control.noborder') ||
-             group.querySelector('input[role="combobox"]') ||
-             group.querySelector('input.form-control');
-    }
-
-    const input = findCid01Input() || document.querySelector('input[role="combobox"]#mui-80, input[role="combobox"][id^="mui-"]');
-    if (!input) {
-      console.warn('[AutoCID] Campo CID10-01 não encontrado.');
+    // Se abriu em Folha de rosto, navega pra SOAP e depois executa
+    if (/\/prontuarioeletronico_mariana\/atendimento\/\d+\/folhaderosto$/i.test(path)) {
+      // clica no link "Atendimento SOAP"
+      const hrefRe = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i;
+      const link = Array.from(document.querySelectorAll('nav a.nav-link'))
+        .find(a => hrefRe.test(a.getAttribute('href') || ''));
+      if (link) {
+        link.click();
+      }
+      // não faz nada aqui; ao carregar /primaria o bloco abaixo roda
       return;
     }
 
-    // digita "Z00" para o backend sugerir; MUI costuma montar um popup com role="listbox"
-    input.focus();
-    setNativeValue(input, 'Z00');
+    // Só roda em /primaria
+    if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i.test(path)) return;
 
-    // observa o body (o popup do MUI pode vir fora do container)
-    const wanted = /(^(?:z00\.0)\b)|z00\.0.*exame.*geral/i;
-    const obs = new MutationObserver(() => {
-      const options = Array.from(document.querySelectorAll(
-        '[role="option"], .MuiAutocomplete-option, .MuiAutocomplete-paper li, .select2-results__option, .autocomplete-item, [id*="mui-"][role="option"]'
-      ));
-      const match = options.find(el => wanted.test((el.textContent || '').trim()));
-      if (match) {
-        match.click();
-        obs.disconnect();
-        console.log('[AutoCID] Selecionado: Z00.0 EXAME MEDICO GERAL');
+    // Fluxo: achar label "CID10-01" -> input MUI -> digitar "Z00" -> clicar "Z00.0 EXAME MEDICO GERAL"
+    (async () => {
+      try {
+        // acha o form-group pela label
+        const lbl = await waitFor('.form-group.row > label.col-form-label', { timeout: 12000 });
+        // pode haver vários: escolhe o que contém "CID10-01"
+        const all = Array.from(document.querySelectorAll('.form-group.row > label.col-form-label'));
+        const lbCID = all.find(l => /cid10-01/i.test(l.textContent || ''));
+        if (!lbCID) throw new Error('Label CID10-01 não encontrada');
+
+        const group = lbCID.closest('.form-group.row');
+        if (!group) throw new Error('Container do CID10-01 não encontrado');
+
+        const input = group.querySelector('input[role="combobox"]') ||
+                      group.querySelector('input.form-control.noborder') ||
+                      group.querySelector('input.form-control') ||
+                      (await waitFor('input[role="combobox"]'));
+        if (!input) throw new Error('Input do CID10-01 não encontrado');
+
+        input.focus();
+        setNativeValue(input, 'Z00');
+
+        // espera popup de opções do MUI/Autocomplete
+        const wanted = /(^(?:z00\.0)\b)|z00\.0.*exame.*geral/i;
+
+        // tenta achar rapidamente sem observer
+        const findOption = () => Array.from(document.querySelectorAll(
+          '[role="option"], [id*="listbox"] [role="option"], .MuiAutocomplete-option, .MuiAutocomplete-paper li, .select2-results__option, .autocomplete-item'
+        )).find(el => wanted.test((el.textContent || '').trim()));
+
+        let opt = findOption();
+
+        if (!opt) {
+          // observa o body até aparecer
+          const optEl = await new Promise((resolve, reject) => {
+            const obs = new MutationObserver(() => {
+              const m = findOption();
+              if (m) { obs.disconnect(); resolve(m); }
+            });
+            obs.observe(document.body, { childList: true, subtree: true });
+            setTimeout(() => { obs.disconnect(); reject(new Error('Opção Z00.0 não apareceu')); }, 3000);
+          }).catch(() => null);
+
+          opt = optEl;
+        }
+
+        if (opt) {
+          opt.click();
+          console.log('[AutoCID] Selecionado: Z00.0 EXAME MEDICO GERAL');
+          return;
+        }
+
+        // fallback por teclado: ↓ Enter
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter',     bubbles: true }));
+        console.log('[AutoCID] Fallback por teclado enviado (↓, Enter).');
+      } catch (e) {
+        console.warn('[AutoCID] Falhou:', e.message);
       }
-    });
-    obs.observe(document.body, { childList: true, subtree: true });
-
-    // fallback por teclado (↓, Enter) caso a UI navegue por setas
-    setTimeout(() => {
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter',     bubbles: true }));
-      // encerra observer em 3s mesmo que não tenha aparecido (pra não ficar preso)
-      setTimeout(() => obs.disconnect(), 3000);
-    }, 500);
+    })();
   })();
-  // ====== AUTO-CHECK EM /finalizar E /primaria ======
+
+  // ====== AUTO-CHECK EM /finalizar ======
   (function autoCheckOptions() {
-    const isPrimaria  = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i.test(location.pathname);
     const isFinalizar = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/finalizar$/i.test(location.pathname);
-    if (!isPrimaria && !isFinalizar) return;
+    if (!isFinalizar) return;
 
-    function fireAll(el){
-      el.dispatchEvent(new Event('input',  { bubbles:true }));
-      el.dispatchEvent(new Event('change', { bubbles:true }));
-      // alguns front-ends também escutam click
-      el.click?.();
-    }
-
-    function setCheckboxById(id, checked=true) {
-      const el = document.getElementById(id);
-      if (!el || el.type !== 'checkbox') return false;
-      if (el.checked !== checked) {
-        el.checked = checked;
-        fireAll(el);
-      }
-      return true;
-    }
-
-    function setRadioById(id) {
-      const el = document.getElementById(id);
-      if (!el || el.type !== 'radio') return false;
-      if (!el.checked) {
-        // desmarca os irmãos do mesmo name
-        if (el.name) {
-          document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`).forEach(r => {
-            if (r !== el && r.checked) { r.checked = false; fireAll(r); }
-          });
+    (async () => {
+      try {
+        // IDs que você passou:
+        // checkbox: #_cbConduta_1 ("Retorno para cuidado continuado / programado")
+        // radio:    #desfecho0 ("Liberar o cidadão")
+        const cb = await waitFor('#_cbConduta_1', { timeout: 12000 });
+        if (cb && cb.type === 'checkbox' && !cb.checked) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event('input', { bubbles: true }));
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          cb.click?.();
         }
-        el.checked = true;
-        fireAll(el);
-      }
-      return true;
-    }
 
-    // Também deixo um plano B por texto, caso IDs mudem
-    function setByLabelText(regex, type /*'checkbox'|'radio'*/) {
-      const labels = Array.from(document.querySelectorAll('label'));
-      const lb = labels.find(l => regex.test((l.textContent || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()));
-      if (!lb) return false;
-      const forId = lb.getAttribute('for');
-      if (forId) {
-        const el = document.getElementById(forId);
-        if (el && el.type === type) {
-          if (type === 'checkbox') return setCheckboxById(forId, true);
-          if (type === 'radio')    return setRadioById(forId);
+        const rd = await waitFor('#desfecho0', { timeout: 12000 });
+        if (rd && rd.type === 'radio' && !rd.checked) {
+          // desmarca irmãos do mesmo name
+          if (rd.name) {
+            document.querySelectorAll(`input[type="radio"][name="${CSS.escape(rd.name)}"]`)
+              .forEach(r => { if (r !== rd && r.checked) { r.checked = false; r.dispatchEvent(new Event('change', { bubbles:true })); } });
+          }
+          rd.checked = true;
+          rd.dispatchEvent(new Event('input', { bubbles: true }));
+          rd.dispatchEvent(new Event('change', { bubbles: true }));
+          rd.click?.();
         }
+
+        console.log('[AutoCheck] Marcados: retorno continuado/programado + liberar cidadão');
+      } catch (e) {
+        console.warn('[AutoCheck] Falhou:', e.message);
       }
-      // fallback: input próximo
-      const wrap = lb.closest('.custom-control, .form-check, div, section, fieldset') || lb.parentElement;
-      const el = wrap && wrap.querySelector(`input[type="${type}"]`);
-      if (!el) return false;
-      if (type === 'checkbox') { el.checked = true; fireAll(el); return true; }
-      if (type === 'radio') {
-        if (el.name) {
-          document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`).forEach(r => {
-            if (r !== el && r.checked) { r.checked = false; fireAll(r); }
-          });
-        }
-        el.checked = true; fireAll(el); return true;
-      }
-      return false;
-    }
-
-    function run() {
-      // IDs exatos que você passou:
-      // checkbox: <input id="_cbConduta_1" ...>  label: "Retorno para cuidado continuado / programado"
-      // radio:    <input id="desfecho0" ...>     label: "Liberar o cidadão"
-      const okCheckbox = setCheckboxById('_cbConduta_1', true) ||
-                         setByLabelText(/retorno.*(continuado|programad)/i, 'checkbox');
-
-      const okRadio    = setRadioById('desfecho0') ||
-                         setByLabelText(/liberar.*cida?dao/i, 'radio');
-
-      if (okCheckbox || okRadio) {
-        console.log('[AutoCheck] Feito:', { retornoContinuadoProgramado: okCheckbox, liberarCidadao: okRadio });
-        return true;
-      }
-      return false;
-    }
-
-    // alguns módulos carregam depois — tenta por alguns ciclos
-    let tries = 0;
-    const maxTries = 60; // ~6s
-    const tick = () => {
-      if (run() || ++tries >= maxTries) observer.disconnect();
-    };
-
-    const observer = new MutationObserver(tick);
-    tick();
-    observer.observe(document.body, { childList: true, subtree: true });
-    setTimeout(() => observer.disconnect(), 7000); // safety
+    })();
   })();
-
-
-
 
 })();
