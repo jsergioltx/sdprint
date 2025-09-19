@@ -270,6 +270,7 @@
   document.body.appendChild(btn);
   document.body.appendChild(toggle);
   document.body.appendChild(menu);
+  
   // ===== ENGINE: roda nas trocas de rota/DOM e aplica ações quando telas aparecem =====
   (function sidimAutoEngine() {
     // util: esperar elemento visível
