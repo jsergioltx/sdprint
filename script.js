@@ -270,124 +270,200 @@
   document.body.appendChild(btn);
   document.body.appendChild(toggle);
   document.body.appendChild(menu);
-
-  // ===== AUTO ACTIONS LOOP: requisita CID e marca checkbox/radio quando aparecerem =====
-  (function autoActions() {
-    const CID_QUERIES = ['Z000', 'Z00.0 EXAME MEDICO GERAL']; // sequência igual à sua interação
-    const RUN_GAP_MS = 5000; // evita flood no mesmo atendimento
-    const cidRunAt = new Map(); // atendimentoId -> timestamp do último run
-
-    // util de espera opcional (se precisar futuramente)
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-    function getAtendimentoIdFromPath(pathname) {
-      const m = pathname.match(/\/prontuarioeletronico_mariana\/atendimento\/(\d+)/i);
+  // ===== ENGINE: roda nas trocas de rota/DOM e aplica ações quando telas aparecem =====
+  (function sidimAutoEngine() {
+    // util: esperar elemento visível
+    function waitFor(selector, { root=document, timeout=12000, visible=true } = {}) {
+      return new Promise((resolve, reject) => {
+        const start = performance.now();
+        const check = () => {
+          const el = root.querySelector(selector);
+          if (el && (!visible || el.offsetParent !== null)) return resolve(el);
+          if (performance.now() - start > timeout) return reject(new Error(`waitFor timeout: ${selector}`));
+          raf = requestAnimationFrame(check);
+        };
+        let raf = requestAnimationFrame(check);
+      });
+    }
+    // util: set value no input "do jeito React/MUI"
+    function setNativeValue(el, val) {
+      const proto = Object.getPrototypeOf(el);
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value') ||
+                   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') || {};
+      desc.set && desc.set.call(el, val);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    // util: simular tecla
+    function key(el, k) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key:k, bubbles:true }));
+      el.dispatchEvent(new KeyboardEvent('keypress', { key:k, bubbles:true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key:k, bubbles:true }));
+    }
+    // pega id do atendimento
+    function getAtendimentoId() {
+      const m = location.pathname.match(/\/prontuarioeletronico_mariana\/atendimento\/(\d+)/i);
       return m ? m[1] : null;
     }
 
-    async function fetchCID(query) {
-      const url = new URL('/prontuarioeletronico_mariana/api/cid', location.origin);
-      url.searchParams.set('pesquisa', query);
-      url.searchParams.set('codigoProcedimento', '');
-      const headers = { 'Accept': '*/*' };
-
-      // usa seu scanner de token já existente no script
-      try {
-        const token = (typeof findBearerToken === 'function') ? findBearerToken() : null;
-        if (token) headers['Authorization'] = 'Bearer ' + token;
-      } catch {}
-
-      const res = await fetch(url.toString(), {
-        method: 'GET',
-        headers,
-        credentials: 'include'
-      });
-      if (!res.ok) throw new Error('HTTP ' + res.status + ' em ' + url.pathname);
-      return res;
-    }
-
-    async function ensureCIDRequested() {
-      const id = getAtendimentoIdFromPath(location.pathname);
-      if (!id) return;
-
-      const now = Date.now();
-      if (cidRunAt.has(id) && (now - cidRunAt.get(id) < RUN_GAP_MS)) {
-        return; // ainda recente — evita repetição excessiva
-      }
+    // ========= A) PRIMARIA → selecionar CID Z00.0 pelo Autocomplete =========
+    async function trySelectCID() {
+      if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i.test(location.pathname)) return false;
 
       try {
-        // dispara do jeitinho que você faz: busca curta e depois a opção final
-        await fetchCID(CID_QUERIES[0]);
-        await sleep(150);
-        await fetchCID(CID_QUERIES[1]);
-        console.log(`[AutoCID][${id}] requisitado: ${CID_QUERIES.join(' -> ')}`);
-        cidRunAt.set(id, now);
+        // 1) achar form-group da label "CID10-01"
+        await waitFor('.form-group.row > label.col-form-label');
+        const labels = Array.from(document.querySelectorAll('.form-group.row > label.col-form-label'));
+        const lbCID = labels.find(l => /cid10-01/i.test(l.textContent || ''));
+        if (!lbCID) return false;
+        const group = lbCID.closest('.form-group.row');
+        if (!group) return false;
+
+        // 2) input do MUI
+        const input = group.querySelector('input[role="combobox"]') ||
+                      group.querySelector('input.form-control.noborder') ||
+                      group.querySelector('input.form-control');
+        if (!input) return false;
+
+        // se já está com Z00.0, sai
+        if ((input.value || '').toUpperCase().includes('Z00.0')) return true;
+
+        // 3) foca e digita "Z00" (com eventos de teclado) pra MUI buscar
+        input.focus();
+        // limpa anterior (Ctrl+A + Backspace)
+        input.select?.();
+        key(input, 'Backspace');
+
+        // digita caractere a caractere e também garante via setter
+        for (const ch of ['Z','0','0']) {
+          key(input, ch);
+          setNativeValue(input, (input.value || '') + ch);
+        }
+
+        // 4) espera popup e clica na opção Z00.0 EXAME MEDICO GERAL
+        const wanted = /(^|\s)z00\.0\b.*exame.*medico.*geral/i;
+
+        function findOption() {
+          // MUI geralmente usa [role="listbox"] com filhos [role="option"]
+          const opts = Array.from(document.querySelectorAll(
+            '[role="option"], [id*="listbox"] [role="option"], .MuiAutocomplete-option, .MuiAutocomplete-paper li'
+          ));
+          return opts.find(el => wanted.test((el.textContent || '').trim().toLowerCase()));
+        }
+
+        let option = findOption();
+        if (!option) {
+          option = await new Promise((resolve, reject) => {
+            const obs = new MutationObserver(() => {
+              const m = findOption();
+              if (m) { obs.disconnect(); resolve(m); }
+            });
+            obs.observe(document.body, { childList:true, subtree:true });
+            setTimeout(() => { obs.disconnect(); resolve(null); }, 4000);
+          });
+        }
+
+        if (option) {
+          option.click();
+          console.log('[AutoCID] Z00.0 selecionado via popup.');
+          return true;
+        } else {
+          // fallback: seta ↓ + Enter
+          key(input, 'ArrowDown');
+          key(input, 'Enter');
+          console.log('[AutoCID] Fallback (↓, Enter) enviado.');
+          // dá uma chance do valor refletir
+          setTimeout(() => {
+            if (!((input.value||'').toUpperCase().includes('Z00.0'))) {
+              console.warn('[AutoCID] Não confirmou Z00.0 no input.');
+            }
+          }, 800);
+          return true;
+        }
       } catch (e) {
-        console.warn('[AutoCID] falhou:', e.message);
+        console.warn('[AutoCID] erro:', e.message);
+        return false;
       }
     }
 
-    function ensureFinalizeChecks() {
-      // só roda na página /finalizar
-      if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+\/finalizar$/i.test(location.pathname)) return;
-
-      // checkbox: Retorno para cuidado continuado / programado
-      const cb = document.getElementById('_cbConduta_1');
-      if (cb && !cb.dataset.sdMarked) {
-        if (!cb.checked) {
-          cb.checked = true;
-          cb.dispatchEvent(new Event('input',  { bubbles:true }));
-          cb.dispatchEvent(new Event('change', { bubbles:true }));
+    // ========= B) FINALIZAR → marcar checkbox e radio clicando no LABEL =========
+    async function tryFinalizeChecks() {
+      if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+\/finalizar$/i.test(location.pathname)) return false;
+      try {
+        // usa os IDs fornecidos e clica no LABEL (UI custom)
+        const cb = document.getElementById('_cbConduta_1');
+        if (cb) {
+          const lbCb = document.querySelector('label[for="_cbConduta_1"]');
+          if (lbCb && !cb.checked) { lbCb.click(); console.log('[AutoCheck] Clique no label do checkbox.'); }
         }
-        cb.dataset.sdMarked = '1';
-        console.log('[AutoCheck] marcado: Retorno para cuidado continuado / programado');
-      }
-
-      // radio: Liberar o cidadão
-      const rd = document.getElementById('desfecho0');
-      if (rd && !rd.dataset.sdMarked) {
-        if (!rd.checked) {
-          if (rd.name) {
-            document.querySelectorAll(`input[type="radio"][name="${CSS.escape(rd.name)}"]`)
-              .forEach(r => { if (r !== rd && r.checked) { r.checked = false; r.dispatchEvent(new Event('change', { bubbles:true })); } });
-          }
-          rd.checked = true;
-          rd.dispatchEvent(new Event('input',  { bubbles:true }));
-          rd.dispatchEvent(new Event('change', { bubbles:true }));
+        const rd = document.getElementById('desfecho0');
+        if (rd) {
+          const lbRd = document.querySelector('label[for="desfecho0"]');
+          if (lbRd && !rd.checked) { lbRd.click(); console.log('[AutoCheck] Clique no label do radio.'); }
         }
-        rd.dataset.sdMarked = '1';
-        console.log('[AutoCheck] marcado: Liberar o cidadão');
+        return !!(cb || rd);
+      } catch (e) {
+        console.warn('[AutoCheck] erro:', e.message);
+        return false;
       }
     }
 
-    // Batching/débito: agenda execução e junta múltiplas mudanças
-    let pending = null;
-    function scheduleWork() {
+    // ========= C) Navegação automática Folha de Rosto → SOAP (opcional) =========
+    function goToSOAPIfOnFolha() {
+      if (/\/prontuarioeletronico_mariana\/atendimento\/\d+\/folhaderosto$/i.test(location.pathname)) {
+        const hrefRe = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i;
+        const link = Array.from(document.querySelectorAll('nav a.nav-link')).find(a => hrefRe.test(a.getAttribute('href')||''));
+        if (link) link.click();
+      }
+    }
+
+    // ========= Orquestração com debouncing e re-tentativas =========
+    let lastRunByAt = {}; // { atendimentoId: timestamp }
+    let pending = false;
+
+    async function run() {
       if (pending) return;
-      pending = setTimeout(async () => {
-        pending = null;
-        // a requisição do CID pode acontecer em QUALQUER subrota de atendimento
-        await ensureCIDRequested();
-        // os checks só fazem sentido em /finalizar
-        ensureFinalizeChecks();
-      }, 200);
+      pending = true;
+
+      try {
+        const at = getAtendimentoId();
+        // evita rodar loucamente a cada micro-mudança
+        if (at) {
+          const now = Date.now();
+          if (lastRunByAt[at] && now - lastRunByAt[at] < 1200) { pending = false; return; }
+          lastRunByAt[at] = now;
+        }
+
+        // se estiver na Folha, tenta ir pra SOAP
+        goToSOAPIfOnFolha();
+
+        // tenta as ações; re-tenta leve se ainda não deu
+        const a = await trySelectCID();
+        const b = await tryFinalizeChecks();
+
+        if (!a || !b) {
+          // agenda re-tentativa curta (SPA pode ainda estar montando)
+          setTimeout(() => { pending = false; run(); }, 800);
+          return;
+        }
+      } catch {
+        // ignora
+      }
+      pending = false;
     }
 
-    // Observa mudanças de DOM (inclui carregamentos parciais/SPA)
-    const mo = new MutationObserver(scheduleWork);
-    mo.observe(document.documentElement, { childList: true, subtree: true });
+    // Observa DOM + navegação SPA + fallback polling
+    const mo = new MutationObserver(() => run());
+    mo.observe(document.documentElement, { childList:true, subtree:true });
 
-    // Observa navegação SPA
-    (function patchHistory() {
-      const wrap = fn => function() { const ret = fn.apply(this, arguments); scheduleWork(); return ret; };
-      history.pushState    = wrap(history.pushState.bind(history));
-      history.replaceState = wrap(history.replaceState.bind(history));
-      window.addEventListener('popstate', scheduleWork);
-    })();
+    const wrap = fn => function() { const r = fn.apply(this, arguments); run(); return r; };
+    history.pushState    = wrap(history.pushState.bind(history));
+    history.replaceState = wrap(history.replaceState.bind(history));
+    window.addEventListener('popstate', run);
 
-    // Chuta a primeira execução e mantém um poll leve (safety)
-    scheduleWork();
-    setInterval(scheduleWork, 2000);
+    // chuta o primeiro
+    run();
+    // safety: tenta periodicamente (caso a app troque sem eventos)
+    setInterval(run, 2500);
   })();
 
 
