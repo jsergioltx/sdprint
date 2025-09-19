@@ -271,144 +271,124 @@
   document.body.appendChild(toggle);
   document.body.appendChild(menu);
 
-  // ===== helpers de espera =====
-  function waitFor(selector, { root = document, timeout = 10000, visibility = false } = {}) {
-    return new Promise((resolve, reject) => {
-      const t0 = performance.now();
-      const test = () => {
-        const el = root.querySelector(selector);
-        if (el && (!visibility || (el.offsetParent !== null))) return resolve(el);
-        if (performance.now() - t0 > timeout) return reject(new Error(`waitFor timeout: ${selector}`));
-        raf = requestAnimationFrame(test);
-      };
-      let raf = requestAnimationFrame(test);
-    });
-  }
-  function setNativeValue(el, val) {
-    const { set } = Object.getOwnPropertyDescriptor(el.__proto__, 'value') ||
-                    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') || {};
-    set && set.call(el, val);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }
+  // ===== AUTO ACTIONS LOOP: requisita CID e marca checkbox/radio quando aparecerem =====
+  (function autoActions() {
+    const CID_QUERIES = ['Z000', 'Z00.0 EXAME MEDICO GERAL']; // sequência igual à sua interação
+    const RUN_GAP_MS = 5000; // evita flood no mesmo atendimento
+    const cidRunAt = new Map(); // atendimentoId -> timestamp do último run
 
-  // ===== AUTO CID Z00.0 =====
-  (function autoCIDZ00() {
-    const path = location.pathname;
+    // util de espera opcional (se precisar futuramente)
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    // Se abriu em Folha de rosto, navega pra SOAP e depois executa
-    if (/\/prontuarioeletronico_mariana\/atendimento\/\d+\/folhaderosto$/i.test(path)) {
-      // clica no link "Atendimento SOAP"
-      const hrefRe = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i;
-      const link = Array.from(document.querySelectorAll('nav a.nav-link'))
-        .find(a => hrefRe.test(a.getAttribute('href') || ''));
-      if (link) {
-        link.click();
-      }
-      // não faz nada aqui; ao carregar /primaria o bloco abaixo roda
-      return;
+    function getAtendimentoIdFromPath(pathname) {
+      const m = pathname.match(/\/prontuarioeletronico_mariana\/atendimento\/(\d+)/i);
+      return m ? m[1] : null;
     }
 
-    // Só roda em /primaria
-    if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+\/primaria$/i.test(path)) return;
+    async function fetchCID(query) {
+      const url = new URL('/prontuarioeletronico_mariana/api/cid', location.origin);
+      url.searchParams.set('pesquisa', query);
+      url.searchParams.set('codigoProcedimento', '');
+      const headers = { 'Accept': '*/*' };
 
-    // Fluxo: achar label "CID10-01" -> input MUI -> digitar "Z00" -> clicar "Z00.0 EXAME MEDICO GERAL"
-    (async () => {
+      // usa seu scanner de token já existente no script
       try {
-        // acha o form-group pela label
-        const lbl = await waitFor('.form-group.row > label.col-form-label', { timeout: 12000 });
-        // pode haver vários: escolhe o que contém "CID10-01"
-        const all = Array.from(document.querySelectorAll('.form-group.row > label.col-form-label'));
-        const lbCID = all.find(l => /cid10-01/i.test(l.textContent || ''));
-        if (!lbCID) throw new Error('Label CID10-01 não encontrada');
+        const token = (typeof findBearerToken === 'function') ? findBearerToken() : null;
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+      } catch {}
 
-        const group = lbCID.closest('.form-group.row');
-        if (!group) throw new Error('Container do CID10-01 não encontrado');
+      const res = await fetch(url.toString(), {
+        method: 'GET',
+        headers,
+        credentials: 'include'
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' em ' + url.pathname);
+      return res;
+    }
 
-        const input = group.querySelector('input[role="combobox"]') ||
-                      group.querySelector('input.form-control.noborder') ||
-                      group.querySelector('input.form-control') ||
-                      (await waitFor('input[role="combobox"]'));
-        if (!input) throw new Error('Input do CID10-01 não encontrado');
+    async function ensureCIDRequested() {
+      const id = getAtendimentoIdFromPath(location.pathname);
+      if (!id) return;
 
-        input.focus();
-        setNativeValue(input, 'Z00');
-
-        // espera popup de opções do MUI/Autocomplete
-        const wanted = /(^(?:z00\.0)\b)|z00\.0.*exame.*geral/i;
-
-        // tenta achar rapidamente sem observer
-        const findOption = () => Array.from(document.querySelectorAll(
-          '[role="option"], [id*="listbox"] [role="option"], .MuiAutocomplete-option, .MuiAutocomplete-paper li, .select2-results__option, .autocomplete-item'
-        )).find(el => wanted.test((el.textContent || '').trim()));
-
-        let opt = findOption();
-
-        if (!opt) {
-          // observa o body até aparecer
-          const optEl = await new Promise((resolve, reject) => {
-            const obs = new MutationObserver(() => {
-              const m = findOption();
-              if (m) { obs.disconnect(); resolve(m); }
-            });
-            obs.observe(document.body, { childList: true, subtree: true });
-            setTimeout(() => { obs.disconnect(); reject(new Error('Opção Z00.0 não apareceu')); }, 3000);
-          }).catch(() => null);
-
-          opt = optEl;
-        }
-
-        if (opt) {
-          opt.click();
-          console.log('[AutoCID] Selecionado: Z00.0 EXAME MEDICO GERAL');
-          return;
-        }
-
-        // fallback por teclado: ↓ Enter
-        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter',     bubbles: true }));
-        console.log('[AutoCID] Fallback por teclado enviado (↓, Enter).');
-      } catch (e) {
-        console.warn('[AutoCID] Falhou:', e.message);
+      const now = Date.now();
+      if (cidRunAt.has(id) && (now - cidRunAt.get(id) < RUN_GAP_MS)) {
+        return; // ainda recente — evita repetição excessiva
       }
-    })();
-  })();
 
-  // ====== AUTO-CHECK EM /finalizar ======
-  (function autoCheckOptions() {
-    const isFinalizar = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/finalizar$/i.test(location.pathname);
-    if (!isFinalizar) return;
-
-    (async () => {
       try {
-        // IDs que você passou:
-        // checkbox: #_cbConduta_1 ("Retorno para cuidado continuado / programado")
-        // radio:    #desfecho0 ("Liberar o cidadão")
-        const cb = await waitFor('#_cbConduta_1', { timeout: 12000 });
-        if (cb && cb.type === 'checkbox' && !cb.checked) {
-          cb.checked = true;
-          cb.dispatchEvent(new Event('input', { bubbles: true }));
-          cb.dispatchEvent(new Event('change', { bubbles: true }));
-          cb.click?.();
-        }
+        // dispara do jeitinho que você faz: busca curta e depois a opção final
+        await fetchCID(CID_QUERIES[0]);
+        await sleep(150);
+        await fetchCID(CID_QUERIES[1]);
+        console.log(`[AutoCID][${id}] requisitado: ${CID_QUERIES.join(' -> ')}`);
+        cidRunAt.set(id, now);
+      } catch (e) {
+        console.warn('[AutoCID] falhou:', e.message);
+      }
+    }
 
-        const rd = await waitFor('#desfecho0', { timeout: 12000 });
-        if (rd && rd.type === 'radio' && !rd.checked) {
-          // desmarca irmãos do mesmo name
+    function ensureFinalizeChecks() {
+      // só roda na página /finalizar
+      if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+\/finalizar$/i.test(location.pathname)) return;
+
+      // checkbox: Retorno para cuidado continuado / programado
+      const cb = document.getElementById('_cbConduta_1');
+      if (cb && !cb.dataset.sdMarked) {
+        if (!cb.checked) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event('input',  { bubbles:true }));
+          cb.dispatchEvent(new Event('change', { bubbles:true }));
+        }
+        cb.dataset.sdMarked = '1';
+        console.log('[AutoCheck] marcado: Retorno para cuidado continuado / programado');
+      }
+
+      // radio: Liberar o cidadão
+      const rd = document.getElementById('desfecho0');
+      if (rd && !rd.dataset.sdMarked) {
+        if (!rd.checked) {
           if (rd.name) {
             document.querySelectorAll(`input[type="radio"][name="${CSS.escape(rd.name)}"]`)
               .forEach(r => { if (r !== rd && r.checked) { r.checked = false; r.dispatchEvent(new Event('change', { bubbles:true })); } });
           }
           rd.checked = true;
-          rd.dispatchEvent(new Event('input', { bubbles: true }));
-          rd.dispatchEvent(new Event('change', { bubbles: true }));
-          rd.click?.();
+          rd.dispatchEvent(new Event('input',  { bubbles:true }));
+          rd.dispatchEvent(new Event('change', { bubbles:true }));
         }
-
-        console.log('[AutoCheck] Marcados: retorno continuado/programado + liberar cidadão');
-      } catch (e) {
-        console.warn('[AutoCheck] Falhou:', e.message);
+        rd.dataset.sdMarked = '1';
+        console.log('[AutoCheck] marcado: Liberar o cidadão');
       }
+    }
+
+    // Batching/débito: agenda execução e junta múltiplas mudanças
+    let pending = null;
+    function scheduleWork() {
+      if (pending) return;
+      pending = setTimeout(async () => {
+        pending = null;
+        // a requisição do CID pode acontecer em QUALQUER subrota de atendimento
+        await ensureCIDRequested();
+        // os checks só fazem sentido em /finalizar
+        ensureFinalizeChecks();
+      }, 200);
+    }
+
+    // Observa mudanças de DOM (inclui carregamentos parciais/SPA)
+    const mo = new MutationObserver(scheduleWork);
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+
+    // Observa navegação SPA
+    (function patchHistory() {
+      const wrap = fn => function() { const ret = fn.apply(this, arguments); scheduleWork(); return ret; };
+      history.pushState    = wrap(history.pushState.bind(history));
+      history.replaceState = wrap(history.replaceState.bind(history));
+      window.addEventListener('popstate', scheduleWork);
     })();
+
+    // Chuta a primeira execução e mantém um poll leve (safety)
+    scheduleWork();
+    setInterval(scheduleWork, 2000);
   })();
+
 
 })();
