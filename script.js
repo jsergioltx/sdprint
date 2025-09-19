@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SIDIM - Botão Imprimir Fichas
+// @name         SIDIM - Botão Imprimir Fichas (+ Auto CID Z00.0)
 // @namespace    sidim-autoprint
-// @version      1.0
-// @description  Injeta um botão para imprimir/abrir/baixar fichas dos atendimentos finalizados do dia.
+// @version      1.1
+// @description  Injeta botão para imprimir/abrir/baixar fichas dos atendimentos finalizados do dia e auto-seleciona CID Z00.0 ao abrir prontuário.
 // @match        https://sidim.no-ip.net/prontuarioeletronico_mariana/*
 // @grant        none
 // ==/UserScript==
@@ -270,4 +270,45 @@
   document.body.appendChild(btn);
   document.body.appendChild(toggle);
   document.body.appendChild(menu);
+
+  // ===== AUTO CID Z00.0 (simula sua ação manual; token sai automático) =====
+  (function autoCIDZ00() {
+    // só em páginas de prontuário: /atendimento/{id}/...
+    if (!/\/prontuarioeletronico_mariana\/atendimento\/\d+/i.test(location.pathname)) return;
+
+    // tenta localizar o campo de CID (combobox/autocomplete); ajuste aqui se necessário
+    const input = document.querySelector(
+      'input[id*="cid" i],input[name*="cid" i],input[placeholder*="cid" i],[role="combobox"][aria-label*="cid" i],input[aria-label*="cid" i]'
+    );
+    if (!input) {
+      console.warn('[AutoCID] Campo CID não encontrado.');
+      return;
+    }
+
+    // digita "Z00" para disparar a busca "Z000"
+    input.focus();
+    input.value = 'Z00';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // observa surgimento da lista e clica na opção "Z00.0 EXAME MEDICO GERAL"
+    const obs = new MutationObserver(() => {
+      const item = Array.from(document.querySelectorAll(
+        'li,div[role="option"],.select2-results__option,.autocomplete-item'
+      )).find(el => /Z00\.0.*EXAME.*GERAL/i.test((el.textContent || '').trim()));
+      if (item) {
+        item.click();
+        obs.disconnect();
+        console.log('[AutoCID] CID Z00.0 selecionado.');
+      }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+
+    // fallback por teclado caso a UI use navegação com setas
+    setTimeout(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter',     bubbles: true }));
+      setTimeout(() => obs.disconnect(), 3000); // encerra observer depois
+    }, 600);
+  })();
+
 })();
