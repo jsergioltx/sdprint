@@ -311,4 +311,91 @@
     }, 600);
   })();
 
+    // ====== AUTO-CHECK DE OPÇÕES (finalizar e prontuário) ======
+  (function autoCheckOptions() {
+    const isProntuario = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/(primaria|.+)?/i.test(location.pathname);
+    const isFinalizar  = /\/prontuarioeletronico_mariana\/atendimento\/\d+\/finalizar$/i.test(location.pathname);
+    if (!isProntuario && !isFinalizar) return;
+
+    // normaliza texto p/ busca robusta (sem acento/caixa)
+    const norm = s => (s || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g,' ').trim().toLowerCase();
+
+    // marca checkbox ou switch cujo label contenha o padrão
+    function setCheckByLabel(regex, checked = true) {
+      const allLabels = Array.from(document.querySelectorAll('label, [role="label"]'));
+      let done = false;
+
+      for (const lb of allLabels) {
+        const t = norm(lb.textContent);
+        if (!regex.test(t)) continue;
+
+        // tenta achar input associado (for/id)
+        let inp = null;
+        const forId = lb.getAttribute('for');
+        if (forId) inp = document.getElementById(forId);
+
+        // fallback: input dentro do label
+        if (!inp) inp = lb.querySelector('input[type="checkbox"], input[type="radio"]');
+
+        // fallback 2: procurar próximo input por proximidade
+        if (!inp) {
+          const near = lb.closest('div,li,tr,section') || lb.parentElement;
+          inp = near && near.querySelector('input[type="checkbox"], input[type="radio"]');
+        }
+
+        if (inp) {
+          if (inp.checked !== checked) {
+            inp.checked = checked;
+            // dispara eventos p/ frameworks captarem
+            inp.dispatchEvent(new Event('input',  { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            // alguns front-ends dependem do click
+            inp.click();
+          }
+          done = true;
+        }
+      }
+      return done;
+    }
+
+    // observa mudanças no DOM para páginas dinâmicas
+    const watcher = new MutationObserver(() => tick());
+    let armed = false, tries = 0;
+
+    function tick() {
+      // padrões flexíveis para os rótulos
+      const rxRetorno = /retorno.*(cuidado.*continuado|continuado|programad)/i; // cobre: “Retorno para cuidado continuado / programado”
+      const rxLiberar = /liberar.*cida?dao/i; // cobre “Liberar o cidadão”
+
+      const ok1 = setCheckByLabel(rxRetorno, true);
+      const ok2 = setCheckByLabel(rxLiberar, true);
+
+      if (ok1 && ok2) {
+        console.log('[AutoCheck] Opções marcadas:', { retornoContinuadoProgramado: ok1, liberarCidadao: ok2 });
+        watcher.disconnect();
+      } else {
+        // tenta por alguns ciclos até 5s
+        if (++tries > 50) watcher.disconnect();
+      }
+    }
+
+    function arm() {
+      if (armed) return;
+      armed = true;
+      tick();
+      watcher.observe(document.body, { childList: true, subtree: true });
+      // safety: desarma em 6s
+      setTimeout(() => watcher.disconnect(), 6000);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => setTimeout(arm, 200));
+    } else {
+      setTimeout(arm, 200);
+    }
+  })();
+
+
 })();
