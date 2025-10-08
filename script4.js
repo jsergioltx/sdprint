@@ -206,7 +206,7 @@
   }
 
   // ===== UI: botão flutuante + menu simples =====
-  /*const btn = document.createElement('button');
+  const btn = document.createElement('button');
   btn.id = 'sidim-autoprint-btn';
   btn.textContent = 'Imprimir Fichas';
   Object.assign(btn.style, {
@@ -217,7 +217,7 @@
   });
   btn.addEventListener('click', main);
 
-  const menu = document.createElement('div');
+  /*const menu = document.createElement('div');
   Object.assign(menu.style, {
     position:'fixed', right:'16px', bottom:'64px', zIndex:99999,
     padding:'10px', borderRadius:'10px', border:'1px solid #ccc',
@@ -265,11 +265,11 @@
     CONCURRENCY = parseInt(menu.querySelector('#sidim-conc').value || '4', 10);
     PRINT_GAP_MS = parseInt(menu.querySelector('#sidim-gap').value || '3500', 10);
     menu.style.display = 'none';
-  });
+  });*/
 
   document.body.appendChild(btn);
   document.body.appendChild(toggle);
-  document.body.appendChild(menu);*/
+  document.body.appendChild(menu);
   
   // ===== AUTO-CID: dispara as 2 requisições ao iniciar o atendimento (/primaria) =====
   (function autoCIDBoot() {
