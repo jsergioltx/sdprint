@@ -268,8 +268,8 @@
   });*/
 
   document.body.appendChild(btn);
-  document.body.appendChild(toggle);
-  document.body.appendChild(menu);
+  //document.body.appendChild(toggle);
+  //document.body.appendChild(menu);
   
   // ===== AUTO-CID: dispara as 2 requisições ao iniciar o atendimento (/primaria) =====
   (function autoCIDBoot() {
