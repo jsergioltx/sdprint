@@ -22,7 +22,7 @@
   // Paralelismo para open/download
   let CONCURRENCY = 4;
   // Intervalo entre prints (ms)
-  let PRINT_GAP_MS = 3500;
+  let PRINT_GAP_MS = 500;
 
   // ===== CORE =====
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -206,7 +206,7 @@
   }
 
   // ===== UI: botão flutuante + menu simples =====
-  const btn = document.createElement('button');
+  /*const btn = document.createElement('button');
   btn.id = 'sidim-autoprint-btn';
   btn.textContent = 'Imprimir Fichas';
   Object.assign(btn.style, {
@@ -269,7 +269,7 @@
 
   document.body.appendChild(btn);
   document.body.appendChild(toggle);
-  document.body.appendChild(menu);
+  document.body.appendChild(menu);*/
   
   // ===== AUTO-CID: dispara as 2 requisições ao iniciar o atendimento (/primaria) =====
   (function autoCIDBoot() {
