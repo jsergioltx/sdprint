@@ -191,9 +191,16 @@
       } else {
         // print sequencial (recomendado)
         for (const t of tarefas) {
-          const blob = await fetchPDFBlob(t.id, token);
-          await printBlob(blob, safeFileName(`${String(t.idx).padStart(2,'0')} - ${t.nome}`));
-          await sleep(PRINT_GAP_MS);
+          try {
+            console.log(`[AutoPrint] Tentando ficha ${t.idx}/${tarefas.length}: ${t.nome}`);
+            const blob = await fetchPDFBlob(t.id, token);
+            await printBlob(blob, safeFileName(`${String(t.idx).padStart(2,'0')} - ${t.nome}`));
+            await sleep(PRINT_GAP_MS);
+          } catch (e) {
+            console.error(`[AutoPrint] Falha na ficha ${t.idx}/${tarefas.length} (${t.nome}):`, e);
+            falhas.push(t.nome);
+            // A linha essencial é esta: NÃO CHAMAR throw. O loop continua.
+          }
         }
         alert('Impressões concluídas.');
       }
