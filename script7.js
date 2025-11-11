@@ -164,6 +164,7 @@
   }
 
   async function main() {
+    const falhas = [];
     try {
       btn.disabled = true; btn.textContent = 'Processando…';
       const token = findBearerToken();
@@ -202,7 +203,7 @@
             // A linha essencial é esta: NÃO CHAMAR throw. O loop continua.
           }
         }
-        alert('Impressões concluídas.');
+        alert('Impressões concluídas.' + (falhas.length ? ` Falhas: ${falhas.join(', ')}` : ''));
       }
     } catch (e) {
       console.error(e);
