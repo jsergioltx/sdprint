@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SIDIM - Botão Imprimir Fichas (+ Auto CID Z00.0)
 // @namespace    sidim-autoprint
-// @version      1.1
-// @description  Injeta botão para imprimir/abrir/baixar fichas dos atendimentos finalizados do dia e auto-seleciona CID Z00.0 ao abrir prontuário.
+// @version      1.2
+// @description  Injeta botão para imprimir/abrir/baixar fichas com seletor de data (hover) e auto-seleciona CID Z00.0.
 // @match        https://sidim.no-ip.net/prontuarioeletronico_mariana/*
 // @grant        none
 // ==/UserScript==
@@ -27,13 +27,24 @@
   // ===== CORE =====
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  const hojeBR = (() => {
+  // Função auxiliar para pegar data hoje em formato ISO (yyyy-mm-dd) para o Input HTML
+  const getTodayISO = () => {
     const tz = 'America/Sao_Paulo';
     const d = new Date();
-    const p = new Intl.DateTimeFormat('pt-BR', { timeZone: tz }).formatToParts(d);
-    const m = Object.fromEntries(p.map(x=>[x.type,x.value]));
-    return `${m.day.padStart(2,'0')}/${m.month.padStart(2,'0')}/${m.year}`;
-  })();
+    // Ajusta para o fuso horário correto antes de pegar a string ISO
+    const dateInTz = new Date(d.toLocaleString('en-US', { timeZone: tz }));
+    const year = dateInTz.getFullYear();
+    const month = String(dateInTz.getMonth() + 1).padStart(2, '0');
+    const day = String(dateInTz.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Converte yyyy-mm-dd (Input) para dd/mm/yyyy (API do SIDIM)
+  const formatIsoToBr = (isoDate) => {
+    if (!isoDate) return null;
+    const [y, m, d] = isoDate.split('-');
+    return `${d}/${m}/${y}`;
+  };
 
   function buildURL(path, params = null) {
     const u = new URL(APP_BASE + path, BASE);
@@ -90,13 +101,16 @@
     return res.json();
   }
 
-  async function getAtendimentosFinalizados(token, { startDate=hojeBR, endDate=hojeBR, idFuncionario=FUNCIONARIO_ID, idEstabelecimento=ESTABELECIMENTO_ID, pageSize=200 } = {}) {
+  // Modificado para aceitar datas dinâmicas vindo do input
+  async function getAtendimentosFinalizados(token, dataAlvoBR) {
     const url = buildURL('/api/atendimento/atendimentos', {
-      startDate, endDate,
-      idFuncionario, idEstabelecimento,
+      startDate: dataAlvoBR,
+      endDate: dataAlvoBR, // Mesma data para pegar apenas aquele dia
+      idFuncionario: FUNCIONARIO_ID,
+      idEstabelecimento: ESTABELECIMENTO_ID,
       orderBy:'acrescente',
       status:'4',
-      pageSize:String(pageSize)
+      pageSize:'200'
     });
     const data = await fetchJSONAuth(url, token);
     return (Array.isArray(data) ? data : []).filter(x =>
@@ -166,11 +180,27 @@
   async function main() {
     const falhas = [];
     try {
-      btn.disabled = true; btn.textContent = 'Processando…';
+      // Pega data do input e converte
+      const dataSelecionadaISO = dateInput.value;
+      const dataSelecionadaBR = formatIsoToBr(dataSelecionadaISO);
+
+      if (!dataSelecionadaBR) throw new Error("Data inválida.");
+
+      btn.disabled = true;
+      btn.textContent = 'Processando...';
+
       const token = findBearerToken();
       if (!token) throw new Error('Token não encontrado. Faça login e tente novamente.');
-      const lista = await getAtendimentosFinalizados(token);
-      if (!lista.length) { alert('Nenhum atendimento finalizado hoje.'); return; }
+
+      console.log(`Buscando atendimentos para: ${dataSelecionadaBR}`);
+      
+      // Passa a data escolhida para a função
+      const lista = await getAtendimentosFinalizados(token, dataSelecionadaBR);
+      
+      if (!lista.length) { 
+        alert(`Nenhum atendimento finalizado encontrado em ${dataSelecionadaBR}.`); 
+        return; 
+      }
 
       const tarefas = lista.map((a, i)=>({ idx:i+1, id:a.id, nome:a?.cidadao?.nome || `cidadao_${a?.idCidadao||'sID'}` }));
 
@@ -190,18 +220,17 @@
         });
         alert('Abas abertas.');
       } else {
-        // print sequencial (recomendado)
+        // print sequencial
         for (const t of tarefas) {
           try {
-            console.log(`[AutoPrint] Tentando ficha ${t.idx}/${tarefas.length}: ${t.nome}`);
+            console.log(`[AutoPrint] Tentando ficha ${t.idx}/${tarefas.length}: ${t.nome}`);
             const blob = await fetchPDFBlob(t.id, token);
             await printBlob(blob, safeFileName(`${String(t.idx).padStart(2,'0')} - ${t.nome}`));
             await sleep(PRINT_GAP_MS);
           } catch (e) {
-            console.error(`[AutoPrint] Falha na ficha ${t.idx}/${tarefas.length} (${t.nome}):`, e);
-            falhas.push(t.nome);
-            // A linha essencial é esta: NÃO CHAMAR throw. O loop continua.
-          }
+            console.error(`[AutoPrint] Falha na ficha ${t.idx}/${tarefas.length} (${t.nome}):`, e);
+            falhas.push(t.nome);
+          }
         }
         alert('Impressões concluídas.' + (falhas.length ? ` Falhas: ${falhas.join(', ')}` : ''));
       }
@@ -213,76 +242,71 @@
     }
   }
 
-  // ===== UI: botão flutuante + menu simples =====
+  // ===== UI: CONTAINER, DATA E BOTÃO =====
+  
+  // 1. Container para agrupar (necessário para o hover funcionar)
+  const container = document.createElement('div');
+  container.id = 'sidim-autoprint-container';
+  Object.assign(container.style, {
+    position: 'fixed', right: '16px', bottom: '16px', zIndex: 99999,
+    display: 'flex', flexDirection: 'column', alignItems: 'flex-end'
+  });
+
+  // 2. Input de Data
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.value = getTodayISO(); // Preenche com a data de hoje automaticamente
+  Object.assign(dateInput.style, {
+    marginBottom: '8px', padding: '6px', borderRadius: '6px',
+    border: '1px solid #ccc', fontFamily: 'sans-serif',
+    boxShadow: '0 4px 10px rgba(0,0,0,0.2)',
+    opacity: '0', visibility: 'hidden', // Escondido por padrão
+    transition: 'opacity 0.3s, visibility 0.3s', // Animação suave
+    cursor: 'pointer'
+  });
+
+  // 3. Botão Principal
   const btn = document.createElement('button');
   btn.id = 'sidim-autoprint-btn';
   btn.textContent = 'Imprimir Fichas';
   Object.assign(btn.style, {
-    position:'fixed', right:'16px', bottom:'16px', zIndex:99999,
     padding:'10px 14px', borderRadius:'10px', border:'1px solid #0d6efd',
     background:'#0d6efd', color:'#fff', fontFamily:'Inter, Segoe UI, Arial', fontSize:'14px',
-    boxShadow:'0 4px 14px rgba(0,0,0,.2)', cursor:'pointer'
+    boxShadow:'0 4px 14px rgba(0,0,0,.2)', cursor:'pointer', whiteSpace: 'nowrap'
   });
+  
   btn.addEventListener('click', main);
 
-  /*const menu = document.createElement('div');
-  Object.assign(menu.style, {
-    position:'fixed', right:'16px', bottom:'64px', zIndex:99999,
-    padding:'10px', borderRadius:'10px', border:'1px solid #ccc',
-    background:'#fff', color:'#333', fontFamily:'Inter, Segoe UI, Arial', fontSize:'13px',
-    boxShadow:'0 6px 20px rgba(0,0,0,.2)', display:'none', minWidth:'220px'
+  // 4. Lógica de Hover (Mouse Entra/Sai do Container)
+  container.addEventListener('mouseenter', () => {
+    dateInput.style.visibility = 'visible';
+    dateInput.style.opacity = '1';
   });
-  menu.innerHTML = `
-    <div style="margin-bottom:6px;font-weight:600">AutoPrint – Opções</div>
-    <label style="display:block;margin:6px 0;">
-      Modo:
-      <select id="sidim-mode" style="float:right">
-        <option value="print" selected>print</option>
-        <option value="open">open</option>
-        <option value="download">download</option>
-      </select>
-    </label>
-    <label style="display:block;margin:6px 0;">
-      Concorrência:
-      <input id="sidim-conc" type="number" min="1" max="10" value="4" style="float:right;width:60px">
-    </label>
-    <label style="display:block;margin:6px 0;">
-      Gap print (ms):
-      <input id="sidim-gap" type="number" min="0" step="100" value="3500" style="float:right;width:80px">
-    </label>
-    <div style="clear:both"></div>
-    <button id="sidim-save" style="margin-top:8px;width:100%;padding:6px 8px;border-radius:8px;border:1px solid #0d6efd;background:#0d6efd;color:#fff;cursor:pointer">Salvar</button>
-  `;
-  const toggle = document.createElement('button');
-  toggle.textContent = '⋮';
-  Object.assign(toggle.style, {
-    position:'fixed', right:'16px', bottom:'56px', zIndex:99999,
-    width:'32px', height:'32px', borderRadius:'16px', border:'1px solid #999',
-    background:'#fff', color:'#333', cursor:'pointer', boxShadow:'0 2px 8px rgba(0,0,0,.15)'
+  container.addEventListener('mouseleave', () => {
+    // Só esconde se o input não estiver focado (opcional, mas melhora UX)
+    if (document.activeElement !== dateInput) {
+        dateInput.style.opacity = '0';
+        dateInput.style.visibility = 'hidden';
+    }
   });
-  toggle.title = 'Opções do AutoPrint';
-  toggle.addEventListener('click', () => {
-    menu.style.display = (menu.style.display === 'none' ? 'block' : 'none');
-    // carrega valores atuais
-    menu.querySelector('#sidim-mode').value = OUTPUT_MODE;
-    menu.querySelector('#sidim-conc').value = CONCURRENCY;
-    menu.querySelector('#sidim-gap').value = PRINT_GAP_MS;
-  });
-  menu.querySelector('#sidim-save').addEventListener('click', () => {
-    OUTPUT_MODE = menu.querySelector('#sidim-mode').value;
-    CONCURRENCY = parseInt(menu.querySelector('#sidim-conc').value || '4', 10);
-    PRINT_GAP_MS = parseInt(menu.querySelector('#sidim-gap').value || '3500', 10);
-    menu.style.display = 'none';
-  });*/
 
-  document.body.appendChild(btn);
-  //document.body.appendChild(toggle);
-  //document.body.appendChild(menu);
-  
-  // ===== AUTO-CID: dispara as 2 requisições ao iniciar o atendimento (/primaria) =====
+  // Fecha o input se clicar fora
+  document.addEventListener('click', (e) => {
+      if (!container.contains(e.target)) {
+        dateInput.style.opacity = '0';
+        dateInput.style.visibility = 'hidden';
+      }
+  });
+
+  // Monta a UI
+  container.appendChild(dateInput);
+  container.appendChild(btn);
+  document.body.appendChild(container);
+
+  // ===== AUTO-CID (Mantido Igual) =====
   (function autoCIDBoot() {
-    const RUN_COOLDOWN_MS = 8000;            // evita flood no mesmo atendimento
-    const ranAtByAtendimento = new Map();    // atendimentoId -> timestamp último run
+    const RUN_COOLDOWN_MS = 8000;
+    const ranAtByAtendimento = new Map();
 
     function getAtendimentoId() {
       const m = location.pathname.match(/\/prontuarioeletronico_mariana\/atendimento\/(\d+)\/primaria$/i);
@@ -294,14 +318,12 @@
       url.searchParams.set('pesquisa', query);
       url.searchParams.set('codigoProcedimento', '');
       const headers = { 'Accept': '*/*' };
-
       try {
         if (typeof findBearerToken === 'function') {
           const tok = findBearerToken();
           if (tok) headers['Authorization'] = 'Bearer ' + tok;
         }
       } catch {/* noop */}
-
       const res = await fetch(url.toString(), { method: 'GET', headers, credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status} em ${url.pathname}`);
       return res.json().catch(()=>null);
@@ -309,14 +331,12 @@
 
     async function runSequenceIfOnPrimaria() {
       const atId = getAtendimentoId();
-      if (!atId) return; // não está em /primaria
-
+      if (!atId) return;
       const now = Date.now();
       const last = ranAtByAtendimento.get(atId) || 0;
-      if (now - last < RUN_COOLDOWN_MS) return; // já rodou há pouco
+      if (now - last < RUN_COOLDOWN_MS) return;
 
       try {
-        // sequência igual ao fluxo manual
         await cidGET('Z000');
         await cidGET('Z00.0 EXAME MEDICO GERAL');
         console.log(`[AutoCID] OK para atendimento ${atId}: Z000 -> Z00.0 EXAME MEDICO GERAL`);
@@ -326,10 +346,6 @@
       }
     }
 
-    // dispara quando:
-    // - DOM muda (SPA montando)
-    // - rota muda (pushState/replaceState/popstate)
-    // - e em intervalos leves (safety)
     const debounced = (() => {
       let t; return () => { clearTimeout(t); t = setTimeout(runSequenceIfOnPrimaria, 150); };
     })();
@@ -344,10 +360,8 @@
     } catch {}
     window.addEventListener('popstate', debounced);
 
-    // chute inicial + safety poll
     debounced();
     setInterval(runSequenceIfOnPrimaria, 2000);
   })();
-
 
 })();
